@@ -1,0 +1,69 @@
+name: github-minimum-intelligence-installation
+
+on:
+  installation:
+    types: [created]
+  installation_repositories:
+    types: [added]
+
+permissions:
+  contents: read
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log installation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "GitHub Minimum Intelligence installed."
+          echo "Installation ID: ${{ github.event.installation.id }}"
+          echo "Installed by: ${{ github.event.installation.account.login }}"
+
+      - name: Post welcome issue to new repos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Determine which repos were just added
+          if [ "${{ github.event_name }}" = "installation" ]; then
+            REPOS=$(echo '${{ toJSON(github.event.repositories) }}' | jq -r '.[].full_name // empty' 2>/dev/null || true)
+          else
+            REPOS=$(echo '${{ toJSON(github.event.repositories_added) }}' | jq -r '.[].full_name // empty' 2>/dev/null || true)
+          fi
+
+          for REPO in $REPOS; do
+            echo "Creating welcome issue in $REPO"
+            gh issue create --repo "$REPO" \
+              --title "🧠 Welcome to Minimum Intelligence" \
+              --body "$(cat <<'EOF'
+          ## Minimum Intelligence is installed! 🎉
+
+          Your repository now has an AI agent that responds to issues. Here's what to do next:
+
+          ### 1. Add the agent files
+
+          The GitHub App handles authentication, but you still need the agent code in this repo.
+          From the root of this repository, run:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/japer-technology/github-minimum-intelligence/main/setup.sh | bash
+          ```
+
+          Or manually copy the `.github-minimum-intelligence/` folder from
+          [github-minimum-intelligence](https://github.com/japer-technology/github-minimum-intelligence).
+
+          ### 2. Add your LLM API key
+
+          Go to **Settings → Secrets and variables → Actions** and add a secret for your AI provider
+          (e.g. `OPENAI_API_KEY`). See the [supported providers list](https://github.com/japer-technology/github-minimum-intelligence#supported-providers).
+
+          ### 3. Start chatting
+
+          Open a new issue and write anything — the agent will pick it up and reply.
+
+          ---
+          _This issue was created automatically by the Minimum Intelligence GitHub App._
+          EOF
+          )" 2>/dev/null || echo "  ⚠️ Could not create issue in $REPO (may lack issues permission)"
+          done
