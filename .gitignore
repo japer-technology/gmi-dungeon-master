@@ -1,2 +1,5 @@
 node_modules/
 .DS_Store
+
+# OpenClaw cloned source (built at runtime)
+.GITOPENCLAW/repo/

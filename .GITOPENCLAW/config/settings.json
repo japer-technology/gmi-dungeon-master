@@ -1,0 +1,15 @@
+{
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-4-6",
+  "defaultThinkingLevel": "high",
+  "trustPolicy": {
+    "trustedUsers": ["japertechnology"],
+    "semiTrustedRoles": ["write"],
+    "untrustedBehavior": "read-only-response"
+  },
+  "limits": {
+    "maxTokensPerRun": 10000000,
+    "maxToolCallsPerRun": 1000,
+    "workflowTimeoutMinutes": 120
+  }
+}

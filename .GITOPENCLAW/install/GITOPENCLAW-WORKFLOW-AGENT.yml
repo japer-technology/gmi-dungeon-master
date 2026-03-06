@@ -1,0 +1,85 @@
+name: GITOPENCLAW-WORKFLOW-AGENT
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: github-claw-${{ github.repository }}-issue-${{ github.event.issue.number }}-${{ github.run_id }}
+      cancel-in-progress: false
+    env:
+      OPENCLAW_REF: main
+    if: >-
+      (github.event_name == 'issues')
+      || (github.event_name == 'issue_comment' && github.event.comment.user.login != 'github-actions[bot]')
+    steps:
+      - name: Authorize
+        id: authorize
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" --jq '.permission' 2>/dev/null || echo "none")
+          echo "Actor: ${{ github.actor }}, Permission: $PERM"
+          echo "actor_permission=$PERM" >> "$GITHUB_OUTPUT"
+          if [[ "$PERM" != "admin" && "$PERM" != "maintain" && "$PERM" != "write" ]]; then
+            echo "::notice::Permission $PERM is below admin/maintain/write — trust gating deferred to agent"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Guard
+        run: bun .GITOPENCLAW/lifecycle/GITOPENCLAW-ENABLED.ts
+
+      - name: Preflight
+        run: bun .GITOPENCLAW/lifecycle/GITOPENCLAW-PREFLIGHT.ts
+
+      - name: Preinstall
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun .GITOPENCLAW/lifecycle/GITOPENCLAW-INDICATOR.ts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Cache OpenClaw repo
+        uses: actions/cache@v4
+        with:
+          path: .GITOPENCLAW/repo/openclaw/openclaw
+          key: ${{ runner.os }}-openclaw-repo-${{ env.OPENCLAW_REF }}
+          restore-keys: |
+            ${{ runner.os }}-openclaw-repo-
+
+      - name: Clone and build OpenClaw from source
+        run: bash .GITOPENCLAW/install/setup-openclaw-repo.sh --ref "${{ env.OPENCLAW_REF }}"
+
+      - name: Run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR_PERMISSION: ${{ steps.authorize.outputs.actor_permission }}
+        run: bun .GITOPENCLAW/lifecycle/GITOPENCLAW-AGENT.ts

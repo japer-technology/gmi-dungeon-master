@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GITOPENCLAW Settings",
+  "description": "Configuration schema for .GITOPENCLAW/config/settings.json",
+  "type": "object",
+  "required": ["defaultProvider", "defaultModel", "defaultThinkingLevel"],
+  "properties": {
+    "defaultProvider": {
+      "type": "string",
+      "enum": ["anthropic", "openai", "google", "bedrock", "ollama"],
+      "description": "The AI provider to use for agent invocations"
+    },
+    "defaultModel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The model identifier to use (must be non-empty)"
+    },
+    "defaultThinkingLevel": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high"],
+      "description": "The thinking level to pass to the agent"
+    },
+    "trustPolicy": {
+      "type": "object",
+      "description": "Trust-level gating policy for controlling agent capabilities per actor",
+      "properties": {
+        "trustedUsers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "GitHub usernames that receive full (trusted) agent capabilities"
+        },
+        "semiTrustedRoles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["admin", "maintain", "write"]
+          },
+          "description": "GitHub permission levels that receive semi-trusted (read-only) agent capabilities"
+        },
+        "untrustedBehavior": {
+          "type": "string",
+          "enum": ["read-only-response", "block"],
+          "description": "How to handle untrusted actors: respond with a read-only explanation or block entirely"
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "description": "Cost and resource boundaries for agent runs",
+      "properties": {
+        "maxTokensPerRun": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Maximum total tokens (input + output) allowed per agent run"
+        },
+        "maxToolCallsPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of tool calls allowed per agent run"
+        },
+        "workflowTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 360,
+          "description": "Hard time boundary in minutes for the agent workflow (GitHub Actions max: 360)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
