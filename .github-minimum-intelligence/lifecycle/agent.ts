@@ -77,6 +77,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { resolve } from "path";
+import { handleSoraCommand, isSoraCommand } from "./sora";
 
 // ─── Paths and event context ───────────────────────────────────────────────────
 // `import.meta.dir` resolves to `.github-minimum-intelligence/lifecycle/`; stepping up one level
@@ -158,6 +159,43 @@ async function gh(...args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Stage, commit (if needed), and push repository changes with retry-on-conflict.
+ */
+async function commitAndPushStateChanges(issueNumber: number): Promise<void> {
+  const addResult = await run(["git", "add", "-A"]);
+  if (addResult.exitCode !== 0) {
+    console.error("git add failed with exit code", addResult.exitCode);
+  }
+
+  const { exitCode } = await run(["git", "diff", "--cached", "--quiet"]);
+  if (exitCode !== 0) {
+    const commitResult = await run(["git", "commit", "-m", `minimum-intelligence: work on issue #${issueNumber}`]);
+    if (commitResult.exitCode !== 0) {
+      console.error("git commit failed with exit code", commitResult.exitCode);
+    }
+  }
+
+  const pushBackoffs = [1000, 2000, 3000, 5000, 7000, 8000, 10000, 12000, 12000, 15000];
+  let pushSucceeded = false;
+  for (let i = 1; i <= 10; i++) {
+    const push = await run(["git", "push", "origin", `HEAD:${defaultBranch}`]);
+    if (push.exitCode === 0) { pushSucceeded = true; break; }
+    if (i < 10) {
+      console.log(`Push failed, rebasing and retrying (${i}/10)...`);
+      await run(["git", "pull", "--rebase", "-X", "theirs", "origin", defaultBranch]);
+      await new Promise(r => setTimeout(r, pushBackoffs[i - 1]));
+    }
+  }
+
+  if (!pushSucceeded) {
+    throw new Error(
+      "All 10 push attempts failed. Auto-reconciliation could not be completed. " +
+      "Session state was not persisted to remote. Check the workflow logs for details."
+    );
+  }
+}
+
 // ─── Restore reaction state from indicator.ts ────────────────────────
 // `indicator.ts` runs before dependency installation and writes the 🚀
 // reaction metadata to `/tmp/reaction-state.json`.  We read it here so the
@@ -219,6 +257,54 @@ try {
   } else {
     prompt = `${title}\n\n${body}`;
   }
+
+  // ── Fast-path command: /sora ────────────────────────────────────────────────
+  if (isSoraCommand(prompt)) {
+    if (!process.env.OPENAI_API_KEY) {
+      await gh(
+        "issue", "comment", String(issueNumber),
+        "--body",
+        "## ⚠️ Missing API Key: `OPENAI_API_KEY`\n\n" +
+        "`/sora` commands call OpenAI's video API directly and require `OPENAI_API_KEY`.\n\n" +
+        "Go to **Settings → Secrets and variables → Actions** and add a repository secret named `OPENAI_API_KEY`, then retry your `/sora` command."
+      );
+      throw new Error("OPENAI_API_KEY is required for /sora commands.");
+    }
+
+    let soraReply = "";
+    try {
+      soraReply = await handleSoraCommand({
+        commandText: prompt,
+        issueNumber,
+        repo,
+        defaultBranch,
+        minimumIntelligenceDir,
+        openaiApiKey: process.env.OPENAI_API_KEY,
+      });
+    } catch (error: any) {
+      const message = error?.message ?? String(error);
+      soraReply = [
+        "## ❌ /sora command failed",
+        "",
+        "```",
+        message,
+        "```",
+        "",
+        "Use `/sora help` for command syntax.",
+      ].join("\n");
+    }
+
+    await commitAndPushStateChanges(issueNumber);
+    await gh(
+      "issue",
+      "comment",
+      String(issueNumber),
+      "--body",
+      soraReply.slice(0, MAX_COMMENT_LENGTH)
+    );
+
+    succeeded = true;
+  } else {
 
   // ── Validate provider API key ────────────────────────────────────────────────
   // This check is inside the try block so that the finally clause always runs
@@ -332,54 +418,19 @@ try {
   }
 
   // ── Commit and push state changes ───────────────────────────────────────────
-  // Stage all changes (session log, mapping JSON, any files the agent edited),
-  // commit only if the index is dirty, then push with a retry-on-conflict loop.
-  const addResult = await run(["git", "add", "-A"]);
-  if (addResult.exitCode !== 0) {
-    console.error("git add failed with exit code", addResult.exitCode);
-  }
-  const { exitCode } = await run(["git", "diff", "--cached", "--quiet"]);
-  if (exitCode !== 0) {
-    // exitCode !== 0 means there are staged changes to commit.
-    const commitResult = await run(["git", "commit", "-m", `minimum-intelligence: work on issue #${issueNumber}`]);
-    if (commitResult.exitCode !== 0) {
-      console.error("git commit failed with exit code", commitResult.exitCode);
-    }
-  }
-
-  // Retry push up to 10 times with increasing backoff delays, rebasing on
-  // each conflict with `-X theirs` to auto-resolve in favour of the remote.
-  const pushBackoffs = [1000, 2000, 3000, 5000, 7000, 8000, 10000, 12000, 12000, 15000];
-  let pushSucceeded = false;
-  for (let i = 1; i <= 10; i++) {
-    const push = await run(["git", "push", "origin", `HEAD:${defaultBranch}`]);
-    if (push.exitCode === 0) { pushSucceeded = true; break; }
-    if (i < 10) {
-      console.log(`Push failed, rebasing and retrying (${i}/10)...`);
-      await run(["git", "pull", "--rebase", "-X", "theirs", "origin", defaultBranch]);
-      await new Promise(r => setTimeout(r, pushBackoffs[i - 1]));
-    }
-  }
-  if (!pushSucceeded) {
-    throw new Error(
-      "All 10 push attempts failed. Auto-reconciliation could not be completed. " +
-      "Session state was not persisted to remote. Check the workflow logs for details."
-    );
-  }
+  await commitAndPushStateChanges(issueNumber);
 
   // ── Post reply as issue comment ──────────────────────────────────────────────
   // Guard against empty/null responses — post an error message instead of silence.
   const trimmedText = agentText.trim();
-  let commentBody = trimmedText.length > 0
+  const commentBody = trimmedText.length > 0
     ? trimmedText.slice(0, MAX_COMMENT_LENGTH)
     : `✅ The agent ran successfully but did not produce a text response. Check the repository for any file changes that were made.\n\nFor full details, see the [workflow run logs](https://github.com/${repo}/actions).`;
-  if (!pushSucceeded) {
-    commentBody += `\n\n---\n⚠️ **Warning:** The agent's session state could not be pushed to the repository. Conversation context may not be preserved for follow-up comments. See the [workflow run logs](https://github.com/${repo}/actions) for details.`;
-  }
   await gh("issue", "comment", String(issueNumber), "--body", commentBody);
 
   // Mark the run as successful so the `finally` block adds 👍 instead of 👎.
   succeeded = true;
+  }
 
 } finally {
   // ── Guaranteed outcome reaction: 👍 on success, 👎 on error ─────────────────
